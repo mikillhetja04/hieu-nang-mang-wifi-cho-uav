@@ -1,4 +1,6 @@
 clc; clear; close all;
+rng(42);   % Seed cố định — đảm bảo reproducibility khi bảo vệ đề tài
+           % Nguồn: MathWorks, rng documentation
 
 %% =========================
 % 1. SYSTEM PARAMETERS
@@ -70,6 +72,8 @@ Latency_all    = zeros(Nrun, Nd);
 %% =========================
 % 5. MAIN SIMULATION LOOP
 % =========================
+fprintf('Bắt đầu mô phỏng Monte Carlo (%d runs × %d distances)...\n', Nrun, Nd);
+tic;
 for k = 1:Nrun
     for i = 1:Nd
 
@@ -131,19 +135,22 @@ for k = 1:Nrun
         loss = rand < p_loss;
         PacketLoss_all(k, i) = loss;
 
-        % ===== Throughput (Ch.4.3.1) =====
-        % Goodput = PHY_rate × MAC_efficiency × (1 − PER)
-        % Nguồn: Bianchi (2000) IEEE JSAC; Bellalta et al. (2016) IEEE Wireless Comm.
-        % MAC_eff = 0.7 hấp thụ overhead CSMA/CA, ACK, SIFS, DIFS
-        % (1 - p_loss) phản ánh tỉ lệ gói thực sự thành công trên kênh
-        
+        % ===== Throughput / Goodput (Ch.4.3.1) =====
+        % Công thức Monte Carlo thuần túy: Goodput = rate × MAC_eff × (1 − loss)
+        %
+        % Lý do dùng (1 - loss) thay vì (1 - p_loss):
+        %   - loss là biến Bernoulli ngẫu nhiên của iteration này
+        %     → đại diện cho 'thực tại vật lý' cụ thể: gói đến hay không
+        %   - Dùng (1 - p_loss) = đặt kỳ vọng vào sample → phương sai thấp giả tạo
+        %   - Nhất quán 100% với Latency: loss==1 → Retry penalty VÀ Goodput=0
+        %   - Sau Nrun=500 iterations, mean() tự hội tụ về rate×MAC_eff×(1-p_loss)
+        % Nguồn: Bianchi (2000) IEEE JSAC Vol.18; Proakis & Salehi (2008) Ch.1
         if rate == 0
-            tp = 0;                                  % Không có kết nối
+            tp = 0;                        % Không có kết nối
         else
-            tp = rate * MAC_eff * (1 - p_loss);      % Goodput theo MCS và PER
+            tp = rate * MAC_eff * (1 - loss);  % loss=0: full goodput; loss=1: tp=0
         end
         Throughput_all(k, i) = tp;
-
 
         % ===== Latency (Ch.1.3.1) =====
         % E2E Latency = Prop_Delay + Tx_Delay + MAC_Queue_Delay [+ Retry]
@@ -169,6 +176,9 @@ for k = 1:Nrun
         end
     end
 end
+
+elapsed = toc;
+fprintf('Hoàn thành! Thời gian: %.1f giây.\n', elapsed);
 
 %% =========================
 % 6. AVERAGING & SMOOTHING
@@ -462,6 +472,10 @@ end
 fprintf('[KQ4] SINR max / min  : %.1f dB / %.1f dB\n', max(SINR_smooth), min(SINR_smooth));
 fprintf('============================================================\n');
 fprintf('→ UAV hoạt động AN TOÀN trong bán kính < d_c = %.0f m\n', dc);
-fprintf('→ Vận tốc tối đa để video ổn định: %d m/s (%.0f km/h)\n', ...
-    v(jitter_fail_idx)-1, (v(jitter_fail_idx)-1)*3.6);
+if ~isempty(jitter_fail_idx)
+    fprintf('→ Vận tốc tối đa để video ổn định : %d m/s (%.0f km/h)\n', ...
+        v(jitter_fail_idx)-1, (v(jitter_fail_idx)-1)*3.6);
+else
+    fprintf('→ Jitter luôn trong ngưỡng cho tầm vận tốc khảo sát (0–30 m/s)\n');
+end
 fprintf('============================================================\n');
