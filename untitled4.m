@@ -132,20 +132,18 @@ for k = 1:Nrun
         PacketLoss_all(k, i) = loss;
 
         % ===== Throughput (Ch.4.3.1) =====
-        video_rate = 5 + rand * 3;   % Yêu cầu video HD: 5–8 Mbps (Ch.1.3.4)
+        % Goodput = PHY_rate × MAC_efficiency × (1 − PER)
+        % Nguồn: Bianchi (2000) IEEE JSAC; Bellalta et al. (2016) IEEE Wireless Comm.
+        % MAC_eff = 0.7 hấp thụ overhead CSMA/CA, ACK, SIFS, DIFS
+        % (1 - p_loss) phản ánh tỉ lệ gói thực sự thành công trên kênh
+        
         if rate == 0
-            tp = 0;
-        elseif loss
-            tp = rate * MAC_eff * 0.5;   % Giảm do retransmit
+            tp = 0;                                  % Không có kết nối
         else
-            tp = rate * MAC_eff;
-        end
-        % Tắc nghẽn buffer: chỉ áp dụng khi KHÔNG có loss
-        % Vì loss==1 đã *0.5, nhân thêm *0.7 = *0.35 là chồng chất sai cơ chế
-        if ~loss && tp > 0 && tp < video_rate
-            tp = tp * 0.7;
+            tp = rate * MAC_eff * (1 - p_loss);      % Goodput theo MCS và PER
         end
         Throughput_all(k, i) = tp;
+
 
         % ===== Latency (Ch.1.3.1) =====
         % E2E Latency = Prop_Delay + Tx_Delay + MAC_Queue_Delay [+ Retry]
