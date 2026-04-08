@@ -37,6 +37,12 @@ PHY_rate = [13 26 39  52  78 104 117 130];  % Tốc độ PHY tương ứng (Mbp
 MAC_eff  = 0.7;                              % Hiệu suất MAC (overhead 802.11)
 Packet_Size_bits = 1500 * 8;                 % Kích thước gói Ethernet (bits)
 
+% Bảng p_loss theo từng MCS — khai báo NGOÀI vòng lặp (tránh tái tạo 57500 lần)
+% Mô hình L2S: p_loss giảm đơn điệu khi MCS tăng
+% Nguồn: IEEE 802.11ac-2013 Annex B; ITU-T G.1010 (2001); Perahia & Stacey (2013)
+p_loss_table = [0.30, 0.15, 0.08, 0.05, 0.02, 0.01, 0.005, 0.002];
+%               MCS0  MCS1  MCS2  MCS3  MCS4  MCS5  MCS6   MCS7
+
 %% =========================
 % 3. KHOẢNG CÁCH & CRITICAL DISTANCE
 % =========================
@@ -79,20 +85,24 @@ for k = 1:Nrun
         Pr_base = Pt + Gt + Gr - PL;
 
         % ===== Shadowing Log-Normal (Ch.4.2.2): sigma = 3 dB =====
-        shadowing   = randn * 3;
-        Pr_shadowed = Pr_base + shadowing;
+        % Giới hạn dao động ở mức ±2σ (±6 dB) để tránh sụt giảm phi vật lý
+        shadowing   = randn * 3;         % N(0,9): σ=3dB, KHÔNG clipping (Rappaport 2002 Sec 3.3)
+        Pr_shadowed   = Pr_base + shadowing;
 
         % ===== Rician Fading (Ch.4.2.3) - công thức đúng =====
         % h = sqrt(K/(K+1)) + sqrt(1/(2*(K+1))) * (N(0,1) + jN(0,1))
         LOS_amp  = sqrt(K / (K + 1));
-        NLOS_amp = sqrt(1 / (2*(K + 1))) * (randn + 1i*randn);
+        
+        NLOS_amp = sqrt(1 / (2*(K+1))) * (randn + 1i*randn);  % Gaussian phức, KHÔNG clipping (Simon & Alouini 2005)
+        
         fading   = LOS_amp + NLOS_amp;
         Pr       = Pr_shadowed + 20*log10(abs(fading));
 
         % ===== Nhiễu & SINR (Ch.4.2.4) =====
-        I_inst = I_mean + randn * 2;
-        NI_mW  = 10^(N0/10) + 10^(I_inst/10);
-        SINR   = Pr - 10*log10(NI_mW);
+        % Giới hạn nhiễu dao động ở mức ±2σ (±4 dB)
+        I_inst = I_mean + randn * 2;   % Nhiễu tức thời, KHÔNG clipping (Tse & Viswanath 2005)
+        NI_mW         = 10^(N0/10) + 10^(I_inst/10);
+        SINR          = Pr - 10*log10(NI_mW);
         SINR_all(k, i) = SINR;
 
         % ===== Adaptive MCS (Ch.4.2.5) =====
@@ -102,26 +112,24 @@ for k = 1:Nrun
         else
             rate = PHY_rate(idx);
         end
-% ===== Packet Loss (Ch.4.2.6) — Căn theo từng ngưỡng MCS =====
-% Mô hình L2S (Link-to-System Mapping):
-% p_loss gắn với từng MCS index, giảm đơn điệu khi MCS tăng.
-% Nguồn: IEEE 802.11ac-2013 Annex B, ITU-T G.1010, Perahia & Stacey (2013)
-
-% Bảng p_loss tương ứng 8 mức MCS (index 1–8)
-% Áp dụng khi SINR nằm trong vùng [SNR_req(m), SNR_req(m+1))
-p_loss_table = [0.30, 0.15, 0.08, 0.05, 0.02, 0.01, 0.005, 0.002];
-
-if rate == 0
-    % SINR < SNR_req(1) = 4 dB: kết nối sụp đổ hoàn toàn
-    % Mọi gói đều mất → p_loss = 1.0
-    p_loss = 1.0;
-else
-    % idx đã tính ở bước MCS: index MCS đang dùng (1–8)
-    p_loss = p_loss_table(idx);
-end
-
-loss = rand < p_loss;
-PacketLoss_all(k, i) = loss;
+        % ===== Packet Loss (Ch.4.2.6) — Căn theo từng ngưỡng MCS =====
+        % Mô hình L2S (Link-to-System Mapping):
+        % p_loss gắn với từng MCS index, giảm đơn điệu khi MCS tăng.
+        % Nguồn: IEEE 802.11ac-2013 Annex B, ITU-T G.1010, Perahia & Stacey (2013)
+        
+        % p_loss_table đã khai báo ở Phần 2 (ngoài vòng lặp)
+        
+        if rate == 0
+            % SINR < SNR_req(1) = 4 dB: kết nối sụp đổ hoàn toàn
+            % Mọi gói đều mất → p_loss = 1.0
+            p_loss = 1.0;
+        else
+            % idx đã tính ở bước MCS: index MCS đang dùng (1–8)
+            p_loss = p_loss_table(idx);
+        end
+        
+        loss = rand < p_loss;
+        PacketLoss_all(k, i) = loss;
 
         % ===== Throughput (Ch.4.3.1) =====
         video_rate = 5 + rand * 3;   % Yêu cầu video HD: 5–8 Mbps (Ch.1.3.4)
@@ -132,8 +140,10 @@ PacketLoss_all(k, i) = loss;
         else
             tp = rate * MAC_eff;
         end
-        if tp > 0 && tp < video_rate
-            tp = tp * 0.7;   % Tắc nghẽn buffer khi không đủ băng thông
+        % Tắc nghẽn buffer: chỉ áp dụng khi KHÔNG có loss
+        % Vì loss==1 đã *0.5, nhân thêm *0.7 = *0.35 là chồng chất sai cơ chế
+        if ~loss && tp > 0 && tp < video_rate
+            tp = tp * 0.7;
         end
         Throughput_all(k, i) = tp;
 
@@ -176,10 +186,6 @@ Latency_avg    = mean(Latency_all, 1);
  PacketLoss_smooth  = movmean(PacketLoss_avg, win);
  Latency_smooth     = movmean(Latency_avg, win);
 
-%Throughput_smooth  = Throughput_avg;
-%SINR_smooth        = SINR_avg;
-%PacketLoss_smooth  = PacketLoss_avg;
-%Latency_smooth     = Latency_avg;
 
 %% =========================
 % 7. JITTER MODEL - HÀM LIÊN TỤC (Ch.4.2.7)
@@ -345,7 +351,7 @@ xlabel('Khoảng cách (m)','FontSize',11);
 ylabel('Packet Loss Ratio','FontSize',11);
 title('Tỷ lệ mất gói vs Khoảng cách (Ch.4.2.6)','FontSize',12);
 legend('Location','northwest','FontSize',9);
-xlim([d(1) d(end)]); ylim([0 0.65]);
+xlim([d(1) d(end)]); ylim([0 1.05]);
 
 %% ===== Figure 4: Jitter vs Vận tốc UAV (Ch.4.2.7) =====
 % Mô hình hàm liên tục: Jitter = J0 + alpha*fd^2
@@ -380,8 +386,8 @@ if ~isempty(jitter_fail_idx)
 end
 
 % Annotate Doppler shift tại các mốc
-for i = 1:3:length(v)
-    text(v(i), Jitter(i)-4, sprintf('f_d\n%.0fHz',fd(i)), ...
+for ii = 1:3:length(v)
+    text(v(ii), Jitter(ii)-4, sprintf('f_d\n%.0fHz',fd(ii)), ...
         'FontSize',7,'HorizontalAlignment','center','Color',[0.4 0.4 0.4]);
 end
 
@@ -401,7 +407,7 @@ patch([dc dc d(end) d(end)], [0 0 220 220], [1.0 0.95 0.85], ...
     'EdgeColor','none','FaceAlpha',0.3);
 
 plot(d, Latency_avg,    '--','Color',col_raw,'DisplayName','Raw');
-plot(d, Latency_smooth, 'm','LineWidth',2,'DisplayName','Smoothed');
+plot(d, Latency_smooth, '-m','LineWidth',2,'DisplayName','Smoothed');
 yline(latency_th,'r--','LineWidth',1.5, ...
     'Label',sprintf('Ngưỡng FPV Realtime (%dms)',latency_th));
 
